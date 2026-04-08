@@ -14,6 +14,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("../../migrations/0002_vocab_ai_memory.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("../../migrations/0003_settings.sql"),
+    },
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

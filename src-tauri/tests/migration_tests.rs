@@ -11,7 +11,7 @@ fn migrates_from_empty_to_latest() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
 
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 
     let exists: i32 = conn
         .query_row(
@@ -22,4 +22,14 @@ fn migrates_from_empty_to_latest() {
         .unwrap();
 
     assert_eq!(exists, 1);
+
+    let settings_exists: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_settings'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(settings_exists, 1);
 }

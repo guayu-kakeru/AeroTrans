@@ -4,11 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite --port 1420",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "vitest --run",
-    "build": "echo \"frontend build placeholder\""
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "vue": "^3.5.17"
   },
   "devDependencies": {
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
+    "@tauri-apps/cli": "^2.8.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
   }
 }
