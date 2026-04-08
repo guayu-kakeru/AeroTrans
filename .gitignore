@@ -16,6 +16,7 @@ Cargo.lock
 # Build artifacts
 dist/
 src-tauri/gen/
+artifacts/
 
 # Local worktrees and brainstorm artifacts
 .worktrees/

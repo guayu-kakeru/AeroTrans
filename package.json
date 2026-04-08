@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest --run",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "package:portable": "powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1",
+    "verify:portable": "powershell -ExecutionPolicy Bypass -File scripts/verify-portable-runtime.ps1 -ArtifactDir artifacts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
