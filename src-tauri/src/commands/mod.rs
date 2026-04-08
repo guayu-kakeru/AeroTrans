@@ -1,7 +1,10 @@
 use arboard::Clipboard;
+use global_hotkey::hotkey::HotKey;
+use global_hotkey::GlobalHotKeyManager;
 use regex::Regex;
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use std::str::FromStr;
 use tauri::State;
 
 use crate::db::migrations::run_migrations;
@@ -244,9 +247,36 @@ pub fn check_shortcut_conflict(shortcut: String) -> ShortcutCheckResultDto {
             reason: Some("快捷键与系统保留键冲突".to_string()),
         };
     }
-    ShortcutCheckResultDto {
-        conflict: false,
-        reason: None,
+    let parsed = HotKey::from_str(&shortcut);
+    let Ok(hotkey) = parsed else {
+        return ShortcutCheckResultDto {
+            conflict: true,
+            reason: Some("快捷键格式无效".to_string()),
+        };
+    };
+
+    let manager = match GlobalHotKeyManager::new() {
+        Ok(manager) => manager,
+        Err(_) => {
+            return ShortcutCheckResultDto {
+                conflict: true,
+                reason: Some("无法访问系统快捷键管理器".to_string()),
+            }
+        }
+    };
+
+    match manager.register(hotkey) {
+        Ok(_) => {
+            let _ = manager.unregister(hotkey);
+            ShortcutCheckResultDto {
+                conflict: false,
+                reason: None,
+            }
+        }
+        Err(err) => ShortcutCheckResultDto {
+            conflict: true,
+            reason: Some(format!("系统级冲突：{err}")),
+        },
     }
 }
 
