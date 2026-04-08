@@ -9,3 +9,9 @@ A lightweight, AI-powered contextual translation and vocabulary learning tool
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup-environment.ps1
 ```
+
+## Project Milestones
+
+- [x] Phase A - Engineering Foundation
+- [ ] Phase B - MVP Translation Flow
+- [ ] Phase C - Vocabulary Learning Enhancements
