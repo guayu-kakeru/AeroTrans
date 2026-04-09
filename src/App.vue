@@ -83,6 +83,7 @@ const apiKeyInput = ref("");
 const hasApiKey = ref(false);
 const settingsMessage = ref("");
 const shortcutStatusMessage = ref("");
+const speaking = ref(false);
 
 const vocabulary = ref<VocabularyItem[]>([]);
 const queueState = ref<ReviewQueueState<VocabularyItem>>(createReviewQueue([]));
@@ -359,6 +360,41 @@ async function translateNow() {
   } finally {
     translating.value = false;
   }
+}
+
+function detectSpeakLanguage(text: string): string {
+  return /[\u4e00-\u9fff]/.test(text) ? "zh-CN" : "en-US";
+}
+
+function speakText(text: string) {
+  const content = text.trim();
+  if (!content) return;
+
+  if (!settings.value.ttsEnabled) {
+    settingsMessage.value = "请先在设置中开启系统 TTS 再使用发音。";
+    return;
+  }
+
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    settingsMessage.value = "当前环境不支持系统语音发音。";
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(content);
+  utterance.lang = detectSpeakLanguage(content);
+  utterance.rate = 0.95;
+  utterance.pitch = 1;
+  utterance.onstart = () => {
+    speaking.value = true;
+  };
+  utterance.onend = () => {
+    speaking.value = false;
+  };
+  utterance.onerror = () => {
+    speaking.value = false;
+  };
+  window.speechSynthesis.speak(utterance);
 }
 
 async function addCurrentToVocabulary(starred = true) {
@@ -679,6 +715,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
   if (companionTimer) window.clearInterval(companionTimer);
   if (keydownHandler) window.removeEventListener("keydown", keydownHandler);
   if (selectionHotkeyUnlisten) {
@@ -774,7 +813,16 @@ onUnmounted(() => {
                 </button>
               </div>
               <div v-if="result" class="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p class="text-sm text-slate-700">{{ result.translation }}</p>
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-sm text-slate-700">{{ result.translation }}</p>
+                  <button
+                    class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                    :disabled="speaking"
+                    @click="speakText(result.translation)"
+                  >
+                    {{ speaking ? "发音中..." : "发音" }}
+                  </button>
+                </div>
                 <p v-if="result.phonetics.length" class="mt-1 text-xs text-slate-500">
                   音标：{{ result.phonetics.join(" / ") }}
                 </p>
@@ -817,12 +865,6 @@ onUnmounted(() => {
                 class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
                 @keydown.enter.prevent="translateNow"
               />
-              <textarea
-                v-model="contextText"
-                rows="3"
-                placeholder="可选：补充上下文，AI 模式会使用"
-                class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
-              />
               <div class="flex flex-wrap gap-2">
                 <button class="rounded-lg bg-accent px-4 py-2 text-white" :disabled="translating" @click="translateNow">
                   {{ translating ? "翻译中..." : "翻译" }}
@@ -831,6 +873,12 @@ onUnmounted(() => {
                   加入单词本
                 </button>
               </div>
+              <textarea
+                v-model="contextText"
+                rows="3"
+                placeholder="可选：补充上下文，AI 模式会使用"
+                class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
+              />
             </div>
 
             <p v-if="errorMessage" class="mt-2 text-sm text-rose-600">{{ errorMessage }}</p>
@@ -840,13 +888,27 @@ onUnmounted(() => {
                 方向：{{ result.detectedDirection }} · 来源：{{ sourceLabels[result.source] }}
                 <span v-if="result.source !== settings.translationProvider">（已自动回退）</span>
               </div>
-              <p class="text-base">{{ result.translation }}</p>
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-base">{{ result.translation }}</p>
+                <button
+                  class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                  :disabled="speaking"
+                  @click="speakText(result.translation)"
+                >
+                  {{ speaking ? "发音中..." : "发音" }}
+                </button>
+              </div>
               <p v-if="result.phonetics.length" class="mt-1 text-xs text-slate-500">
                 音标：{{ result.phonetics.join(" / ") }}
               </p>
               <div class="mt-3 flex flex-wrap gap-2">
-                <span v-for="item in result.glossary" :key="item" class="rounded-full bg-white px-3 py-1 text-xs text-slate-600">
-                  {{ item }}
+                <span
+                  v-for="item in result.glossary"
+                  :key="item"
+                  class="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs text-slate-600"
+                >
+                  <span>{{ item }}</span>
+                  <button class="rounded bg-slate-100 px-1 py-0.5 text-[10px]" :disabled="speaking" @click="speakText(item)">发音</button>
                 </span>
               </div>
             </div>
