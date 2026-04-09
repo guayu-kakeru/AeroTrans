@@ -161,14 +161,21 @@ async fn call_ai_translation(
     };
 
     let (api_base_url, api_model, memory_prompt) = api;
+    let chat_url = resolve_chat_completions_url(&api_base_url);
+    if chat_url.is_empty() {
+        return Ok(None);
+    }
     let memory_guard = "\
-你必须直接给出可背诵内容，禁止解释方法。\n\
-输出限制：最多 4 行、每行不超过 32 个字、不要项目符号。\n\
+你是严格格式化输出器，必须遵守以下协议。\n\
+1) 只输出 4 行中文，不要任何额外说明。\n\
+2) 每行不超过 32 个字。\n\
+3) 不要编号，不要项目符号，不要解释方法。\n\
 固定格式：\n\
 第1行：{word} /音标可选/ 中文释义\n\
 第2行：旧词联想：...\n\
 第3行：记忆场景：...\n\
-第4行：场景短句：...";
+第4行：场景短句：...\n\
+若不符合上述格式，输出将被程序丢弃。";
 
     let system = if for_memory {
         let base = if memory_prompt.trim().is_empty() {
@@ -196,9 +203,13 @@ async fn call_ai_translation(
         }
     };
 
+    let temperature = if for_memory { 0.0 } else { 0.2 };
+    let max_tokens = if for_memory { 220 } else { 512 };
+
     let body = serde_json::json!({
         "model": api_model,
-        "temperature": 0.2,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user_prompt}
@@ -207,7 +218,7 @@ async fn call_ai_translation(
 
     let response = app
         .http_client
-        .post(api_base_url)
+        .post(chat_url)
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -215,6 +226,12 @@ async fn call_ai_translation(
         .map_err(|e| e.to_string())?;
 
     if !response.status().is_success() {
+        let status = response.status();
+        let detail = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<response unreadable>".to_string());
+        eprintln!("[AeroTrans] AI request failed: status={status}, detail={detail}");
         return Ok(None);
     }
 
@@ -226,6 +243,20 @@ async fn call_ai_translation(
         .map(ToOwned::to_owned);
 
     Ok(content)
+}
+
+fn resolve_chat_completions_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("/chat/completions") {
+        return trimmed.to_string();
+    }
+
+    format!("{trimmed}/chat/completions")
 }
 
 fn now_seed() -> u64 {
@@ -1332,5 +1363,23 @@ mod tests {
     fn split_glossary_terms_removes_punct_and_limits_count() {
         let terms = split_glossary_terms("Hello, robust-world! test-case latency.");
         assert_eq!(terms, vec!["Hello", "robust", "world"]);
+    }
+
+    #[test]
+    fn resolve_chat_url_appends_path_when_missing() {
+        let url = resolve_chat_completions_url("https://open.bigmodel.cn/api/paas/v4/");
+        assert_eq!(url, "https://open.bigmodel.cn/api/paas/v4/chat/completions");
+    }
+
+    #[test]
+    fn resolve_chat_url_keeps_existing_endpoint() {
+        let url = resolve_chat_completions_url("https://openrouter.ai/api/v1/chat/completions");
+        assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
+    }
+
+    #[test]
+    fn resolve_chat_url_handles_empty() {
+        let url = resolve_chat_completions_url("   ");
+        assert_eq!(url, "");
     }
 }
