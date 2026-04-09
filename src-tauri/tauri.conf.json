@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.guayu.aerotrans",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
@@ -18,11 +18,29 @@
       {
         "label": "main",
         "title": "AeroTrans",
-        "width": 1080,
-        "height": 760,
+        "width": 680,
+        "height": 540,
+        "minWidth": 300,
+        "minHeight": 220,
+        "center": true,
         "resizable": true,
         "decorations": false,
         "transparent": true
+      },
+      {
+        "label": "spotlight",
+        "title": "AeroTrans Spotlight",
+        "width": 520,
+        "height": 210,
+        "minWidth": 340,
+        "minHeight": 170,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "center": true
       }
     ],
     "security": {

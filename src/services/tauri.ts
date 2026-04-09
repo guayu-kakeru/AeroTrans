@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ApiConfig,
   Settings,
   TranslationRequest,
@@ -28,6 +28,30 @@ export const tauriService = {
 
   async checkShortcutConflict(shortcut: string): Promise<{ conflict: boolean; reason?: string }> {
     return invokeCommand("check_shortcut_conflict", { shortcut });
+  },
+
+  async syncSpotlightShortcut(shortcut: string): Promise<void> {
+    await invokeCommand("sync_spotlight_shortcut", { shortcut });
+  },
+
+  async syncSelectionShortcut(shortcut: string): Promise<void> {
+    await invokeCommand("sync_selection_shortcut", { shortcut });
+  },
+
+  async toggleSpotlightWindow(): Promise<void> {
+    await invokeCommand("toggle_spotlight_window");
+  },
+
+  async showSpotlightWindow(): Promise<void> {
+    await invokeCommand("show_spotlight_window");
+  },
+
+  async hideSpotlightWindow(): Promise<void> {
+    await invokeCommand("hide_spotlight_window");
+  },
+
+  async quitApp(): Promise<void> {
+    await invokeCommand("quit_app");
   },
 
   async loadApiConfig(): Promise<ApiConfig> {

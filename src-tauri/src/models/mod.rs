@@ -8,6 +8,16 @@ pub enum CollectionMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationProvider {
+    Google,
+    Youdao,
+    Mymemory,
+    Ai,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SettingsDto {
     pub spotlight_shortcut: String,
     pub selection_shortcut: String,
@@ -16,23 +26,28 @@ pub struct SettingsDto {
     pub companion_mouse_through: bool,
     pub tts_enabled: bool,
     pub collection_mode: CollectionMode,
+    pub translation_provider: TranslationProvider,
+    pub memory_prompt: String,
 }
 
 impl Default for SettingsDto {
     fn default() -> Self {
         Self {
-            spotlight_shortcut: "Ctrl+Shift+Space".to_string(),
-            selection_shortcut: "Ctrl+Shift+D".to_string(),
+            spotlight_shortcut: "Alt+Shift+F".to_string(),
+            selection_shortcut: "Alt+Shift+L".to_string(),
             companion_enabled: false,
             companion_opacity: 88,
             companion_mouse_through: false,
             tts_enabled: true,
             collection_mode: CollectionMode::ManualStar,
+            translation_provider: TranslationProvider::Youdao,
+            memory_prompt: "You are a vocabulary memory coach. Return concise mnemonic content with old-word split, vivid scene, and one short sentence.".to_string(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiConfigDto {
     pub base_url: String,
     pub model: String,
@@ -41,27 +56,32 @@ pub struct ApiConfigDto {
 impl Default for ApiConfigDto {
     fn default() -> Self {
         Self {
-            base_url: "https://api.openai.com/v1/chat/completions".to_string(),
-            model: "gpt-4o-mini".to_string(),
+            base_url: "https://openrouter.ai/api/v1/chat/completions".to_string(),
+            model: "deepseek/deepseek-chat-v3-0324:free".to_string(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslationRequestDto {
     pub text: String,
     pub context: Option<String>,
+    pub provider: Option<TranslationProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TranslationResultDto {
     pub detected_direction: String,
     pub translation: String,
     pub glossary: Vec<String>,
+    pub phonetics: Vec<String>,
     pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VocabularyDto {
     pub id: Option<i64>,
     pub term: String,

@@ -1,16 +1,21 @@
-import type { ApiConfig, Settings } from "../types";
+﻿import type { ApiConfig, Settings } from "../types";
+
+const DEFAULT_MEMORY_PROMPT =
+  "\u4f60\u662f\u4e13\u4e1a\u5355\u8bcd\u8bb0\u5fc6\u5bfc\u5e08\uff0c\u53ea\u7528\u8054\u60f3\u8bb0\u5fc6\u6cd5 + \u7b80\u5355\u65e7\u8bcd\u62c6\u5206\u6cd5\u5e2e\u6211\u9ad8\u6548\u8bb0\u5355\u8bcd\uff0c\u62d2\u7edd\u67af\u71e5\u6b7b\u8bb0\uff0c\u6bcf\u6761\u90fd\u7ed9\u5177\u4f53\u573a\u666f\u548c\u8bb0\u5fc6\u65b9\u5f0f\uff0c\u6e05\u6670\u597d\u8bb0\u3001\u4e00\u770b\u5c31\u4f1a\u3002\u8bf7\u6309\u4ee5\u4e0b\u89c4\u5219\u8f93\u51fa\uff1a\u628a\u964c\u751f\u5355\u8bcd\u62c6\u6210\u719f\u6089\u65e7\u5355\u8bcd / \u62fc\u97f3 / \u97f3\u8282\uff0c\u4e0d\u9020\u590d\u6742\u7ed3\u6784\uff1b\u642d\u914d\u751f\u6d3b\u5316\u3001\u5938\u5f20\u641e\u7b11\u7684\u573a\u666f\u8054\u60f3\uff0c\u753b\u9762\u611f\u6781\u5f3a\uff1b\u6807\u6ce8\u4e2d\u6587\u91ca\u4e49 + \u8bb0\u5fc6\u903b\u8f91 + \u573a\u666f\u77ed\u53e5\uff0c\u4e0d\u7a7a\u8c08\u65b9\u6cd5\uff0c\u76f4\u63a5\u7ed9\u53ef\u8bb0\u5185\u5bb9\uff1b\u5355\u8bcd\u957f\u5ea6\u4e0d\u9650\uff0c\u4f18\u5148\u9ad8\u9891\u8bcd\u6c47\uff0c\u8bb0\u5fc6\u65b9\u5f0f\u901a\u4fd7\u4e0d\u7ed5\u5f2f\uff0c\u770b\u5b8c\u5c31\u80fd\u7acb\u523b\u8bb0\u4f4f\u3002\u73b0\u5728\u8bf7\u4f60\u9488\u5bf9\u6211\u7ed9\u51fa\u7684\u5355\u8bcd\uff0c\u751f\u6210\u4e13\u5c5e\u8bb0\u5fc6\u65b9\u6848\u3002";
 
 export const defaultSettings = (): Settings => ({
-  spotlightShortcut: "Ctrl+Shift+Space",
-  selectionShortcut: "Ctrl+Shift+D",
+  spotlightShortcut: "Alt+Shift+F",
+  selectionShortcut: "Alt+Shift+L",
   companionEnabled: false,
   companionOpacity: 88,
   companionMouseThrough: false,
   ttsEnabled: true,
-  collectionMode: "manual_star"
+  collectionMode: "manual_star",
+  translationProvider: "youdao",
+  memoryPrompt: DEFAULT_MEMORY_PROMPT
 });
 
 export const defaultApiConfig = (): ApiConfig => ({
-  baseUrl: "https://api.openai.com/v1/chat/completions",
-  model: "gpt-4o-mini"
+  baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+  model: "deepseek/deepseek-chat-v3-0324:free"
 });
