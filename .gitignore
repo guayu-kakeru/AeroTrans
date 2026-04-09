@@ -1,0 +1,23 @@
+# Frontend dependencies
+node_modules/
+
+# Tauri/Rust build output
+src-tauri/target/
+Cargo.lock
+
+# Environment and secrets
+.env
+.env.*
+
+# Local database
+*.db
+*.sqlite
+
+# Build artifacts
+dist/
+src-tauri/gen/
+artifacts/
+
+# Local worktrees and brainstorm artifacts
+.worktrees/
+.superpowers/
