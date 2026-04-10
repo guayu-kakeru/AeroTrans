@@ -259,6 +259,18 @@ fn resolve_chat_completions_url(base_url: &str) -> String {
     format!("{trimmed}/chat/completions")
 }
 
+fn is_local_api_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+
+    let local_keywords = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "ollama"];
+    local_keywords
+        .iter()
+        .any(|keyword| normalized.contains(keyword))
+}
+
 fn now_seed() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -356,10 +368,33 @@ async fn build_memory_content(
     translation: &str,
     seed: u64,
 ) -> Result<String, String> {
+    let conn = connect_db(&state.db_path)?;
+    let (api_base_url, api_model): (String, String) = conn
+        .query_row(
+            "SELECT api_base_url, api_model FROM app_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if is_local_api_base_url(&api_base_url) || api_model.trim().to_ascii_lowercase().contains("ollama") {
+        return Err("检测到本地模型接口。联想记忆仅支持已配置 API Key 的云端 OpenAI 兼容模型。".to_string());
+    }
+
+    let has_api_key = state
+        .secrets
+        .get_secret(API_KEY_SLOT)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if !has_api_key {
+        return Err("未检测到 API Key。请先在设置中配置 API Key 后再生成联想记忆。".to_string());
+    }
+
     if let Some(ai_text) = call_ai_translation(state, term, Some(translation), None, true).await? {
         return Ok(normalize_memory_output(&ai_text, term, translation, seed));
     }
-    Ok(build_local_memory_tip(term, translation, seed))
+
+    Err("AI 联想记忆生成失败，请检查 API 配置或网络连接。".to_string())
 }
 
 fn maybe_silent_collect(
@@ -713,6 +748,7 @@ pub fn toggle_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), Strin
         let _ = window.center();
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+        let _ = window.emit("spotlight_shown", ());
     }
 
     Ok(())
@@ -729,6 +765,7 @@ pub fn show_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), String>
         window.show().map_err(|e| e.to_string())?;
     }
     window.set_focus().map_err(|e| e.to_string())?;
+    let _ = window.emit("spotlight_shown", ());
     Ok(())
 }
 
@@ -772,15 +809,47 @@ fn trigger_copy_shortcut_once() {
 #[cfg(not(target_os = "windows"))]
 fn trigger_copy_shortcut_once() {}
 
+fn capture_selected_text_after_copy() -> Result<String, String> {
+    let before = read_clipboard_text()?.unwrap_or_default();
+    let before_trimmed = before.trim().to_string();
+    let mut latest_non_empty = String::new();
+
+    for _ in 0..8 {
+        thread::sleep(Duration::from_millis(45));
+        let current = read_clipboard_text()?.unwrap_or_default();
+        let trimmed = current.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed != before_trimmed {
+            return Ok(trimmed);
+        }
+
+        latest_non_empty = trimmed;
+    }
+
+    if latest_non_empty.is_empty() {
+        return Ok(String::new());
+    }
+
+    let word_count = latest_non_empty.split_whitespace().count();
+    if latest_non_empty == before_trimmed && (latest_non_empty.chars().count() > 120 || word_count > 18) {
+        return Ok(String::new());
+    }
+
+    Ok(latest_non_empty)
+}
+
 pub fn handle_selection_hotkey_inner(app: &tauri::AppHandle) -> Result<(), String> {
     trigger_copy_shortcut_once();
-    thread::sleep(Duration::from_millis(120));
+    let payload = capture_selected_text_after_copy()?;
     show_main_window_inner(app)?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "未找到主窗口".to_string())?;
     window
-        .emit("selection_translate_triggered", ())
+        .emit("selection_translate_triggered", payload)
         .map_err(|e| e.to_string())
 }
 
@@ -1381,5 +1450,20 @@ mod tests {
     fn resolve_chat_url_handles_empty() {
         let url = resolve_chat_completions_url("   ");
         assert_eq!(url, "");
+    }
+
+    #[test]
+    fn local_api_base_url_detects_local_hosts_and_ollama() {
+        assert!(is_local_api_base_url("http://127.0.0.1:11434/v1/chat/completions"));
+        assert!(is_local_api_base_url("http://localhost:11434/v1/chat/completions"));
+        assert!(is_local_api_base_url("http://0.0.0.0:8080/v1"));
+        assert!(is_local_api_base_url("http://[::1]:11434/v1"));
+        assert!(is_local_api_base_url("https://ollama.local/v1/chat/completions"));
+    }
+
+    #[test]
+    fn local_api_base_url_keeps_cloud_endpoints_available() {
+        assert!(!is_local_api_base_url("https://openrouter.ai/api/v1/chat/completions"));
+        assert!(!is_local_api_base_url("https://open.bigmodel.cn/api/paas/v4/"));
     }
 }

@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { defaultApiConfig, defaultSettings } from "./stores/appState";
 import { tauriService } from "./services/tauri";
 import { defaultClipboardPolicy, shouldReadClipboard } from "./lib/clipboardPolicy";
@@ -76,6 +76,8 @@ const translating = ref(false);
 const translatingCompanion = ref(false);
 const result = ref<TranslationResult | null>(null);
 const errorMessage = ref("");
+const mainTranslateInputRef = ref<HTMLInputElement | null>(null);
+const spotlightInputRef = ref<HTMLInputElement | null>(null);
 
 const settings = ref(defaultSettings());
 const apiConfig = ref(defaultApiConfig());
@@ -87,8 +89,9 @@ const speaking = ref(false);
 
 const vocabulary = ref<VocabularyItem[]>([]);
 const queueState = ref<ReviewQueueState<VocabularyItem>>(createReviewQueue([]));
-const vocabularyViewMode = ref<"review" | "list">("review");
+const vocabularyViewMode = ref<"review" | "list">("list");
 const memoryLoading = ref(false);
+const listMemoryLoadingId = ref<number | null>(null);
 const generatedMemory = ref("");
 
 const companionRawText = ref("");
@@ -98,6 +101,8 @@ const lastClipboardText = ref("");
 let companionTimer: number | undefined;
 let keydownHandler: ((event: KeyboardEvent) => void) | undefined;
 let selectionHotkeyUnlisten: (() => void) | undefined;
+let spotlightShownUnlisten: (() => void) | undefined;
+let windowFocusHandler: (() => void) | undefined;
 
 const isSpotlightWindow = computed(() => windowLabel.value === "spotlight");
 
@@ -109,6 +114,55 @@ const currentWord = computed(() => {
 const appShellStyle = computed(() => ({
   opacity: String(Math.max(0.2, Math.min(1, settings.value.companionOpacity / 100)))
 }));
+
+function isLocalAiConfig(): boolean {
+  const baseUrl = apiConfig.value.baseUrl.trim().toLowerCase();
+  const model = apiConfig.value.model.trim().toLowerCase();
+  if (!baseUrl) return true;
+
+  const localKeywords = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "ollama"];
+  return localKeywords.some((keyword) => baseUrl.includes(keyword) || model.includes(keyword));
+}
+
+function ensureMemoryGenerationAllowed(): boolean {
+  if (runningInBrowser.value) {
+    settingsMessage.value = "浏览器模式不支持联想记忆生成。请在桌面版中配置 API 后使用。";
+    return false;
+  }
+
+  if (!hasApiKey.value) {
+    settingsMessage.value = "未检测到 API Key。请先在设置中配置 API Key 后再生成联想记忆。";
+    return false;
+  }
+
+  if (isLocalAiConfig()) {
+    settingsMessage.value = "检测到本地模型接口。联想记忆仅支持已配置 API Key 的云端 OpenAI 兼容模型。";
+    return false;
+  }
+
+  return true;
+}
+
+async function focusPrimaryInput(selectAll = false) {
+  await nextTick();
+
+  if (isSpotlightWindow.value) {
+    if (spotlightInputRef.value) {
+      spotlightInputRef.value.focus();
+      if (selectAll) {
+        spotlightInputRef.value.select();
+      }
+    }
+    return;
+  }
+
+  if (mainTranslateInputRef.value) {
+    mainTranslateInputRef.value.focus();
+    if (selectAll) {
+      mainTranslateInputRef.value.select();
+    }
+  }
+}
 
 function detectDirection(text: string): "zh_to_en" | "en_to_zh" {
   return /[\u4e00-\u9fff]/.test(text) ? "zh_to_en" : "en_to_zh";
@@ -470,25 +524,48 @@ async function deleteVocabularyById(id: number) {
   await refreshVocabulary();
 }
 
-async function generateMemory(regenerate = false) {
-  if (!currentWord.value) return;
+function updateMemoryInCaches(id: number, memory: string) {
+  const vocabItem = vocabulary.value.find((item) => item.id === id);
+  if (vocabItem) {
+    vocabItem.aiMemory = memory;
+  }
+
+  const reviewItem = queueState.value.items.find((item) => item.id === id);
+  if (reviewItem) {
+    reviewItem.aiMemory = memory;
+  }
+
+  if (currentWord.value?.id === id) {
+    generatedMemory.value = memory;
+  }
+}
+
+async function generateMemoryForWord(id: number, regenerate = false) {
+  if (!ensureMemoryGenerationAllowed()) return;
 
   memoryLoading.value = true;
-  generatedMemory.value = "";
-  try {
-    generatedMemory.value = runningInBrowser.value
-      ? `${currentWord.value.term} /${currentWord.value.term}/ ${currentWord.value.translation}
-旧词联想：${currentWord.value.term.slice(0, 2) || currentWord.value.term} + ${currentWord.value.term.slice(2) || "音"}
-记忆场景：读文章看到 ${currentWord.value.term}，马上想到“${currentWord.value.translation}”。
-场景短句：I see ${currentWord.value.term}, I think ${currentWord.value.translation}.`
-      : regenerate
-        ? await tauriService.regenerateMemory(currentWord.value.id)
-        : await tauriService.generateMemory(currentWord.value.id);
+  listMemoryLoadingId.value = id;
+  if (currentWord.value?.id === id) {
+    generatedMemory.value = "";
+  }
 
-    currentWord.value.aiMemory = generatedMemory.value;
+  try {
+    const memory = regenerate ? await tauriService.regenerateMemory(id) : await tauriService.generateMemory(id);
+    updateMemoryInCaches(id, memory);
+    settingsMessage.value = regenerate ? "联想记忆已重新生成" : "联想记忆已生成";
+  } catch (err) {
+    settingsMessage.value = `联想记忆生成失败：${String(err)}`;
   } finally {
+    if (listMemoryLoadingId.value === id) {
+      listMemoryLoadingId.value = null;
+    }
     memoryLoading.value = false;
   }
+}
+
+async function generateMemory(regenerate = false) {
+  if (!currentWord.value) return;
+  await generateMemoryForWord(currentWord.value.id, regenerate);
 }
 
 async function saveAllSettings() {
@@ -648,10 +725,10 @@ async function updateCompanion() {
   }
 }
 
-async function handleSelectionTranslateTriggered() {
+async function handleSelectionTranslateTriggered(payloadText?: string | null) {
   if (windowLabel.value !== "main") return;
-  const text = await tauriService.readClipboardText();
-  const normalized = (text ?? "").trim();
+  const text = typeof payloadText === "string" ? payloadText : await tauriService.readClipboardText();
+  const normalized = (text ?? "").replace(/\s+/g, " ").trim();
   if (!normalized) {
     settingsMessage.value = "未读取到选中文本。请先选中文本，再按一次划词快捷键。";
     return;
@@ -660,6 +737,7 @@ async function handleSelectionTranslateTriggered() {
   activeTab.value = "spotlight";
   inputText.value = normalized;
   await translateNow();
+  await focusPrimaryInput();
 }
 
 function mountSpotlightKeybind() {
@@ -708,9 +786,22 @@ onMounted(async () => {
 
   if (!runningInBrowser.value && windowLabel.value === "main") {
     const { listen } = await import("@tauri-apps/api/event");
-    selectionHotkeyUnlisten = await listen("selection_translate_triggered", async () => {
-      await handleSelectionTranslateTriggered();
+    selectionHotkeyUnlisten = await listen<string>("selection_translate_triggered", async (event) => {
+      await handleSelectionTranslateTriggered(event.payload ?? null);
     });
+  }
+
+  if (!runningInBrowser.value && isSpotlightWindow.value) {
+    const { listen } = await import("@tauri-apps/api/event");
+    spotlightShownUnlisten = await listen("spotlight_shown", async () => {
+      await focusPrimaryInput(true);
+    });
+
+    windowFocusHandler = () => {
+      void focusPrimaryInput(false);
+    };
+    window.addEventListener("focus", windowFocusHandler);
+    await focusPrimaryInput(true);
   }
 });
 
@@ -723,6 +814,14 @@ onUnmounted(() => {
   if (selectionHotkeyUnlisten) {
     selectionHotkeyUnlisten();
     selectionHotkeyUnlisten = undefined;
+  }
+  if (spotlightShownUnlisten) {
+    spotlightShownUnlisten();
+    spotlightShownUnlisten = undefined;
+  }
+  if (windowFocusHandler) {
+    window.removeEventListener("focus", windowFocusHandler);
+    windowFocusHandler = undefined;
   }
 });
 </script>
@@ -748,6 +847,7 @@ onUnmounted(() => {
 
         <div class="grid gap-2">
           <input
+            ref="spotlightInputRef"
             v-model="inputText"
             placeholder="输入单词或短句，回车翻译，Esc 隐藏..."
             class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
@@ -803,6 +903,7 @@ onUnmounted(() => {
               </div>
               <div class="grid gap-2">
                 <input
+                  ref="mainTranslateInputRef"
                   v-model="inputText"
                   placeholder="输入单词或句子"
                   class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
@@ -860,6 +961,7 @@ onUnmounted(() => {
                 </select>
               </label>
               <input
+                ref="mainTranslateInputRef"
                 v-model="inputText"
                 placeholder="输入单词或句子"
                 class="rounded-lg border border-slate-200 px-3 py-2 outline-none ring-teal-400 focus:ring"
@@ -1015,6 +1117,9 @@ onUnmounted(() => {
             </div>
 
             <div v-else class="grid gap-2">
+              <p class="text-xs text-slate-500">
+                提示：列表模式也支持联想记忆；若使用本地模型或未配置 API Key，会提示先完成 API 配置。
+              </p>
               <div v-if="vocabulary.length === 0" class="rounded-xl border border-dashed border-slate-300 p-6 text-center text-slate-500">
                 暂无单词。
               </div>
@@ -1025,9 +1130,18 @@ onUnmounted(() => {
                     <p class="mt-1 text-sm text-slate-700">{{ item.translation }}</p>
                     <p v-if="item.aiMemory" class="mt-2 text-xs text-amber-900">{{ item.aiMemory }}</p>
                   </div>
-                  <button class="rounded-md bg-rose-500 px-2 py-1 text-xs text-white" @click="deleteVocabularyById(item.id)">
-                    删除
-                  </button>
+                  <div class="flex flex-col items-end gap-2">
+                    <button
+                      class="rounded-md bg-cyan-600 px-2 py-1 text-xs text-white"
+                      :disabled="memoryLoading"
+                      @click="generateMemoryForWord(item.id, Boolean(item.aiMemory))"
+                    >
+                      {{ listMemoryLoadingId === item.id ? "生成中..." : item.aiMemory ? "重新生成联想" : "生成联想记忆" }}
+                    </button>
+                    <button class="rounded-md bg-rose-500 px-2 py-1 text-xs text-white" @click="deleteVocabularyById(item.id)">
+                      删除
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
