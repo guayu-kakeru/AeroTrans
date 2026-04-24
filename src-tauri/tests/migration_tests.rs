@@ -11,7 +11,7 @@ fn migrates_from_empty_to_latest() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
 
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 
     let exists: i32 = conn
         .query_row(
@@ -85,7 +85,7 @@ fn migrates_from_empty_to_latest() {
         .unwrap();
     assert_eq!(
         api_base_url,
-        "https://openrouter.ai/api/v1/chat/completions"
+        "https://text.pollinations.ai/openai"
     );
 
     let memory_prompt_exists: i32 = conn
@@ -147,4 +147,30 @@ fn migration_11_repairs_old_selection_shortcut_and_placeholder_prompt() {
         )
         .unwrap();
     assert!(!repaired_prompt.contains("????"));
+}
+
+#[test]
+fn migration_12_upgrades_legacy_free_provider_defaults_to_pollinations() {
+    let conn = Connection::open_in_memory().unwrap();
+    run_migrations(&conn).unwrap();
+
+    conn.execute(
+        "UPDATE app_settings SET api_base_url = 'https://openrouter.ai/api/v1/chat/completions', api_model = 'deepseek/deepseek-chat-v3-0324:free' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+
+    run_migrations(&conn).unwrap();
+
+    let upgraded: (String, String) = conn
+        .query_row(
+            "SELECT api_base_url, api_model FROM app_settings WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+
+    assert_eq!(upgraded.0, "https://text.pollinations.ai/openai");
+    assert_eq!(upgraded.1, "openai");
 }

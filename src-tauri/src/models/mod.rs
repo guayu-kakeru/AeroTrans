@@ -41,7 +41,7 @@ impl Default for SettingsDto {
             tts_enabled: true,
             collection_mode: CollectionMode::ManualStar,
             translation_provider: TranslationProvider::Youdao,
-            memory_prompt: "You are a vocabulary memory coach. Return concise mnemonic content with old-word split, vivid scene, and one short sentence.".to_string(),
+            memory_prompt: "You are a vocabulary memory coach for Chinese learners. Create short, vivid memory notes that feel tailored to the word. Vary the structure naturally between requests, avoid boilerplate labels, and explain the word with the strongest memory hook instead of a fixed template.".to_string(),
         }
     }
 }
@@ -56,8 +56,8 @@ pub struct ApiConfigDto {
 impl Default for ApiConfigDto {
     fn default() -> Self {
         Self {
-            base_url: "https://openrouter.ai/api/v1/chat/completions".to_string(),
-            model: "deepseek/deepseek-chat-v3-0324:free".to_string(),
+            base_url: "https://text.pollinations.ai/openai".to_string(),
+            model: "openai".to_string(),
         }
     }
 }

@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod db;
+pub mod desktop_registration;
 pub mod models;
 pub mod security;
 pub mod state;
@@ -65,6 +66,10 @@ pub fn run() {
             let app_data = app.path().app_data_dir()?;
             fs::create_dir_all(&app_data)?;
             let db_path = app_data.join("aerotrans.sqlite");
+
+            if let Err(err) = desktop_registration::ensure_current_user_registration() {
+                eprintln!("[AeroTrans] Failed to register app in Windows launcher locations: {err}");
+            }
 
             let (spotlight_shortcut, selection_shortcut) =
                 bootstrap_database(db_path.to_string_lossy().as_ref())

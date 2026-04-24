@@ -50,6 +50,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         sql: include_str!("../../migrations/0011_selection_shortcut_and_prompt_fix.sql"),
     },
+    Migration {
+        version: 12,
+        sql: include_str!("../../migrations/0012_pollinations_free_default.sql"),
+    },
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

@@ -83,11 +83,7 @@ fn provider_from_db(raw: &str) -> TranslationProvider {
 
 fn fallback_translate(text: &str) -> TranslationResultDto {
     let direction = detect_direction(text).to_string();
-    let translation = if direction == "zh_to_en" {
-        format!("Fallback translation: {text}")
-    } else {
-        format!("兜底翻译：{text}")
-    };
+    let translation = format!("Fallback translation: {text}");
 
     let glossary = split_glossary_terms(text);
 
@@ -152,30 +148,22 @@ async fn call_ai_translation(
         )
         .map_err(|e| e.to_string())?;
 
-    let Some(api_key) = app
+    let (api_base_url, api_model, memory_prompt) = api;
+    let api_key = app
         .secrets
         .get_secret(API_KEY_SLOT)
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(None);
-    };
+        .map_err(|e| e.to_string())?;
 
-    let (api_base_url, api_model, memory_prompt) = api;
+    if api_key.is_none() && !allows_anonymous_access(&api_base_url) {
+        return Ok(None);
+    }
+
     let chat_url = resolve_chat_completions_url(&api_base_url);
     if chat_url.is_empty() {
         return Ok(None);
     }
-    let memory_guard = "\
-你是严格格式化输出器，必须遵守以下协议。\n\
-1) 只输出 4 行中文，不要任何额外说明。\n\
-2) 每行不超过 32 个字。\n\
-3) 不要编号，不要项目符号，不要解释方法。\n\
-固定格式：\n\
-第1行：{word} /音标可选/ 中文释义\n\
-第2行：旧词联想：...\n\
-第3行：记忆场景：...\n\
-第4行：场景短句：...\n\
-若不符合上述格式，输出将被程序丢弃。";
+
+    let memory_guard = "Return only the final mnemonic content.\nUse 2 to 4 short lines.\nVary the structure naturally between requests instead of forcing the same template.\nChoose the single strongest memory hook for the word, and avoid meta explanations about your method.";
 
     let system = if for_memory {
         let base = if memory_prompt.trim().is_empty() {
@@ -192,9 +180,9 @@ async fn call_ai_translation(
         let hint = translation_hint
             .map(sanitize_translation_hint)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "（未提供）".to_string());
+            .unwrap_or_else(|| "(not provided)".to_string());
         format!(
-            "目标单词：{text}\n中文释义参考：{hint}\n请生成“能直接记住”的联想内容，不要解释原理。"
+            "Word: {text}\nMeaning hint: {hint}\nCreate a vivid mnemonic note in Chinese or simple bilingual wording. Prefer the most memorable idea for this word instead of filling a fixed format."
         )
     } else {
         match context {
@@ -203,7 +191,7 @@ async fn call_ai_translation(
         }
     };
 
-    let temperature = if for_memory { 0.0 } else { 0.2 };
+    let temperature = if for_memory { 0.7 } else { 0.2 };
     let max_tokens = if for_memory { 220 } else { 512 };
 
     let body = serde_json::json!({
@@ -216,14 +204,16 @@ async fn call_ai_translation(
         ]
     });
 
-    let response = app
-        .http_client
-        .post(chat_url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut request = app.http_client.post(chat_url).json(&body);
+    if let Some(secret) = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        request = request.bearer_auth(secret);
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -244,7 +234,6 @@ async fn call_ai_translation(
 
     Ok(content)
 }
-
 fn resolve_chat_completions_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -252,11 +241,18 @@ fn resolve_chat_completions_url(base_url: &str) -> String {
     }
 
     let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("/chat/completions") {
+    if lower.contains("/chat/completions") || lower.ends_with("/openai") {
         return trimmed.to_string();
     }
 
     format!("{trimmed}/chat/completions")
+}
+
+fn allows_anonymous_access(base_url: &str) -> bool {
+    base_url
+        .trim()
+        .to_ascii_lowercase()
+        .contains("text.pollinations.ai")
 }
 
 fn is_local_api_base_url(base_url: &str) -> bool {
@@ -279,17 +275,18 @@ fn now_seed() -> u64 {
 }
 
 fn default_memory_prompt() -> &'static str {
-    "你是专业单词记忆导师，只用联想记忆法 + 简单旧词拆分法帮我高效记单词，拒绝枯燥死记，每条都给具体场景和记忆方式，清晰好记、一看就会。请按以下规则输出：把陌生单词拆成熟悉旧单词 / 拼音 / 音节，不造复杂结构；搭配生活化、夸张搞笑的场景联想，画面感极强；标注中文释义 + 记忆逻辑 + 场景短句，不空谈方法，直接给可记内容；单词长度不限，优先高频词汇，记忆方式通俗不绕弯，看完就能立刻记住。现在请你针对我给出的单词，生成专属记忆方案。"
+    "You are a vocabulary memory coach for Chinese learners. Create short, vivid memory notes that feel tailored to the word. Vary the structure naturally between requests: use a tiny scene, a sound association, a contrast, or a word split only when it truly helps. Avoid boilerplate labels and avoid explaining your method."
 }
 
 fn sanitize_translation_hint(hint: &str) -> String {
     let compact = hint
         .replace('\n', " ")
         .replace('\r', " ")
-        .replace('；', ";")
-        .replace('，', ",");
+        .replace('\u{FF1B}', ";")
+        .replace('\u{FF0C}', ",")
+        .replace('\u{3002}', ".");
     let part = compact
-        .split(&[';', ',', '。', '.'][..])
+        .split(&[';', ',', '.', '|'][..])
         .map(str::trim)
         .find(|item| !item.is_empty())
         .unwrap_or("");
@@ -303,7 +300,7 @@ fn sanitize_translation_hint(hint: &str) -> String {
 fn split_memory_chunks(term: &str) -> (String, String) {
     let compact = term.trim().to_ascii_lowercase();
     if compact.chars().count() <= 3 {
-        return (compact.clone(), "音".to_string());
+        return (compact.clone(), "phonetic".to_string());
     }
 
     let chars: Vec<char> = compact.chars().collect();
@@ -313,6 +310,7 @@ fn split_memory_chunks(term: &str) -> (String, String) {
     (left, right)
 }
 
+#[allow(dead_code)]
 fn build_local_memory_tip(term: &str, translation: &str, seed: u64) -> String {
     let meaning = sanitize_translation_hint(translation);
     let meaning = if meaning.is_empty() {
@@ -322,9 +320,9 @@ fn build_local_memory_tip(term: &str, translation: &str, seed: u64) -> String {
     };
     let (left, right) = split_memory_chunks(term);
     let scenes = [
-        format!("地铁上看见 {term}，立刻想到“{meaning}”。"),
-        format!("做题遇到 {term}，你秒答“{meaning}”。"),
-        format!("读文章划到 {term}，脑中蹦出“{meaning}”。"),
+        format!("You see '{term}' while reading and instantly recall '{meaning}'."),
+        format!("In a quiz, '{term}' appears and you answer '{meaning}' immediately."),
+        format!("During article skimming, '{term}' pops up and maps to '{meaning}'."),
     ];
     let short_lines = [
         format!("I see {term}, I think {meaning}."),
@@ -334,12 +332,13 @@ fn build_local_memory_tip(term: &str, translation: &str, seed: u64) -> String {
     let idx = (seed as usize) % scenes.len();
 
     format!(
-        "{term} /{term}/ {meaning}\n旧词联想：{left} + {right}\n记忆场景：{scene}\n场景短句：{line}",
+        "{term} /{term}/ {meaning}\nLink: {left} + {right}\nScene: {scene}\nSentence: {line}",
         scene = scenes[idx],
         line = short_lines[idx]
     )
 }
 
+#[allow(dead_code)]
 fn normalize_memory_output(raw: &str, term: &str, translation: &str, seed: u64) -> String {
     let lines: Vec<String> = raw
         .replace('\r', "")
@@ -350,16 +349,151 @@ fn normalize_memory_output(raw: &str, term: &str, translation: &str, seed: u64) 
         .collect();
 
     let compact = lines.join("\n");
-    let has_link = compact.contains("联想");
-    let has_scene = compact.contains("场景");
-    let too_long = compact.chars().count() > 260;
-    let talks_about_method = compact.contains("记忆方法") || compact.contains("学习建议");
+    let compact_lower = compact.to_ascii_lowercase();
+    let too_long = compact.chars().count() > 320;
+    let talks_about_method = compact_lower.contains("method") || compact_lower.contains("strategy");
 
-    if compact.is_empty() || too_long || talks_about_method || !has_link || !has_scene {
+    let structured = if lines.len() >= 4 {
+        let second = &lines[1];
+        let third = &lines[2];
+        let fourth = &lines[3];
+        (second.contains(':') || second.contains('：'))
+            && (third.contains(':') || third.contains('：'))
+            && (fourth.contains(':') || fourth.contains('：'))
+    } else {
+        false
+    };
+    let link_line_is_url = lines
+        .get(1)
+        .map(|line| line.to_ascii_lowercase().contains("http"))
+        .unwrap_or(false);
+
+    if compact.is_empty() || too_long || talks_about_method || !structured || link_line_is_url {
         return build_local_memory_tip(term, translation, seed);
     }
 
     lines.into_iter().take(4).collect::<Vec<_>>().join("\n")
+}
+
+fn build_local_memory_tip_v2(term: &str, translation: &str, seed: u64) -> String {
+    let meaning = sanitize_translation_hint(translation);
+    let meaning = if meaning.is_empty() {
+        translation.trim().to_string()
+    } else {
+        meaning
+    };
+    let (left, right) = split_memory_chunks(term);
+    let styles = [
+        format!(
+            "{term} 一出现，就先把它和“{meaning}”绑在一起。\n把它想成 {left} + {right}，看到这个词就顺手想回 {meaning}。"
+        ),
+        format!(
+            "读到 {term}，脑子里先闪一下“{meaning}”。\n像 {left} 推着 {right} 走进场景里，这个意思会更容易挂住。"
+        ),
+        format!(
+            "{term} 可以当成一个小提示牌：{meaning}。\n做题时一眼认出它，答案就会顺着这个意思出来。"
+        ),
+        format!(
+            "把 {term} 想成 {left} 遇到 {right}。\n那个画面的落点就是“{meaning}”，所以这个词不容易忘。"
+        ),
+    ];
+
+    styles[(seed as usize) % styles.len()].clone()
+}
+
+fn clean_memory_line_v2(line: &str) -> String {
+    let trimmed = line
+        .trim()
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '•' | '·'))
+        .trim();
+
+    if let Some(rest) = trimmed.strip_prefix("Line ") {
+        if let Some((_, tail)) = rest.split_once(':') {
+            return tail.trim().to_string();
+        }
+    }
+
+    if let Some((head, tail)) = trimmed.split_once('.') {
+        if head.chars().all(|c| c.is_ascii_digit()) {
+            return tail.trim().to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn is_memory_ad_line(line: &str) -> bool {
+    let normalized = line.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    normalized == "---"
+        || normalized.contains("support pollinations.ai")
+        || normalized.contains("powered by pollinations.ai")
+        || normalized.contains("support our mission")
+        || normalized.contains("pollinations.ai/redirect")
+        || normalized.contains("free text apis")
+        || normalized.contains("**ad**")
+}
+
+fn normalize_memory_output_v2(raw: &str, term: &str, translation: &str, seed: u64) -> String {
+    let mut lines: Vec<String> = raw
+        .replace('\r', "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(clean_memory_line_v2)
+        .filter(|line| !is_memory_ad_line(line))
+        .collect();
+
+    lines.dedup();
+
+    let compact = lines.join("\n");
+    let compact_lower = compact.to_ascii_lowercase();
+    let too_long = compact.chars().count() > 360;
+    let talks_about_method = [
+        "method",
+        "strategy",
+        "template",
+        "format",
+        "记忆方法",
+        "联想方法",
+        "输出格式",
+        "line 1",
+        "line 2",
+    ]
+    .iter()
+    .any(|marker| compact_lower.contains(marker));
+    let has_url = compact_lower.contains("http://") || compact_lower.contains("https://");
+
+    if compact.is_empty() || too_long || talks_about_method || has_url {
+        return build_local_memory_tip_v2(term, translation, seed);
+    }
+
+    let limited = lines
+        .into_iter()
+        .take(4)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+
+    if limited.is_empty() || (limited.len() == 1 && limited[0].chars().count() < 16) {
+        return build_local_memory_tip_v2(term, translation, seed);
+    }
+
+    limited.join("\n")
+}
+
+fn finalize_memory_content(
+    ai_text: Option<&str>,
+    term: &str,
+    translation: &str,
+    seed: u64,
+) -> String {
+    match ai_text.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(text) => normalize_memory_output_v2(text, term, translation, seed),
+        None => build_local_memory_tip_v2(term, translation, seed),
+    }
 }
 
 async fn build_memory_content(
@@ -377,8 +511,10 @@ async fn build_memory_content(
         )
         .map_err(|e| e.to_string())?;
 
-    if is_local_api_base_url(&api_base_url) || api_model.trim().to_ascii_lowercase().contains("ollama") {
-        return Err("检测到本地模型接口。联想记忆仅支持已配置 API Key 的云端 OpenAI 兼容模型。".to_string());
+    if is_local_api_base_url(&api_base_url)
+        || api_model.trim().to_ascii_lowercase().contains("ollama")
+    {
+        return Err("Detected local model endpoint. Memory generation needs a cloud OpenAI-compatible endpoint.".to_string());
     }
 
     let has_api_key = state
@@ -386,15 +522,28 @@ async fn build_memory_content(
         .get_secret(API_KEY_SLOT)
         .map_err(|e| e.to_string())?
         .is_some();
-    if !has_api_key {
-        return Err("未检测到 API Key。请先在设置中配置 API Key 后再生成联想记忆。".to_string());
+    if !has_api_key && !allows_anonymous_access(&api_base_url) {
+        return Err(
+            "No API Key detected. Configure API Key first, or use an anonymous free endpoint."
+                .to_string(),
+        );
     }
 
-    if let Some(ai_text) = call_ai_translation(state, term, Some(translation), None, true).await? {
-        return Ok(normalize_memory_output(&ai_text, term, translation, seed));
-    }
+    let ai_text = match call_ai_translation(state, term, Some(translation), None, true).await {
+        Ok(value) => value,
+        Err(err) if allows_anonymous_access(&api_base_url) => {
+            eprintln!("[AeroTrans] Anonymous memory generation failed, using local fallback: {err}");
+            None
+        }
+        Err(err) => return Err(err),
+    };
 
-    Err("AI 联想记忆生成失败，请检查 API 配置或网络连接。".to_string())
+    Ok(finalize_memory_content(
+        ai_text.as_deref(),
+        term,
+        translation,
+        seed,
+    ))
 }
 
 fn maybe_silent_collect(
@@ -421,7 +570,7 @@ fn maybe_silent_collect(
     }
 
     conn.execute(
-        "INSERT INTO vocabulary (term, translation, context_text, starred, ai_memory, updated_at) VALUES (?, ?, ?, 0, NULL, CURRENT_TIMESTAMP)",
+        "INSERT INTO vocabulary (term, translation, context_text, starred, ai_memory, updated_at) VALUES (?, ?, ?, 1, NULL, CURRENT_TIMESTAMP)",
         params![term.trim(), result.translation.trim(), context],
     )
     .map_err(|e| e.to_string())?;
@@ -520,7 +669,7 @@ fn cleanup_youdao_translation(raw: &str) -> String {
         .replace_all(raw, "")
         .into_owned();
     cleaned
-        .replace('；', "; ")
+        .replace('\u{FF1B}', "; ")
         .replace('\n', " ")
         .trim()
         .trim_matches(';')
@@ -654,9 +803,9 @@ fn parse_shortcut(shortcut: &str, label: &str) -> Result<Shortcut, String> {
     let parse_result: Result<Shortcut, _> = shortcut.trim().to_string().try_into();
     parse_result.map_err(|_| {
         if label.trim().is_empty() {
-            "快捷键格式无效".to_string()
+            "Shortcut format is invalid".to_string()
         } else {
-            format!("{label} 快捷键格式无效")
+            format!("{label} shortcut format is invalid")
         }
     })
 }
@@ -729,7 +878,7 @@ pub fn register_selection_shortcut_internal(
     register_shortcut_internal(
         app,
         shortcut,
-        "划词翻译",
+        "Selection Translate",
         &state.selection_hotkey_id,
         &state.selection_hotkey_str,
     )
@@ -738,7 +887,7 @@ pub fn register_selection_shortcut_internal(
 pub fn toggle_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("spotlight")
-        .ok_or_else(|| "未找到 Spotlight 窗口".to_string())?;
+        .ok_or_else(|| "Spotlight window not found".to_string())?;
 
     let visible = window.is_visible().map_err(|e| e.to_string())?;
 
@@ -757,7 +906,7 @@ pub fn toggle_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), Strin
 pub fn show_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("spotlight")
-        .ok_or_else(|| "未找到 Spotlight 窗口".to_string())?;
+        .ok_or_else(|| "Spotlight window not found".to_string())?;
 
     let visible = window.is_visible().map_err(|e| e.to_string())?;
     if !visible {
@@ -772,14 +921,14 @@ pub fn show_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), String>
 pub fn hide_spotlight_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("spotlight")
-        .ok_or_else(|| "未找到 Spotlight 窗口".to_string())?;
+        .ok_or_else(|| "Spotlight window not found".to_string())?;
     window.hide().map_err(|e| e.to_string())
 }
 
 pub fn show_main_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "未找到主窗口".to_string())?;
+        .ok_or_else(|| "Main window not found".to_string())?;
 
     if window.is_minimized().map_err(|e| e.to_string())? {
         window.unminimize().map_err(|e| e.to_string())?;
@@ -790,6 +939,17 @@ pub fn show_main_window_inner(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     window.set_focus().map_err(|e| e.to_string())
+}
+
+fn write_clipboard_text(text: &str) -> Result<(), String> {
+    let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| e.to_string())
+}
+
+fn should_restore_clipboard_snapshot(snapshot: &Option<String>) -> bool {
+    snapshot.is_some()
 }
 
 #[cfg(target_os = "windows")]
@@ -809,9 +969,7 @@ fn trigger_copy_shortcut_once() {
 #[cfg(not(target_os = "windows"))]
 fn trigger_copy_shortcut_once() {}
 
-fn capture_selected_text_after_copy() -> Result<String, String> {
-    let before = read_clipboard_text()?.unwrap_or_default();
-    let before_trimmed = before.trim().to_string();
+fn capture_selected_text_after_copy(before_trimmed: &str) -> Result<String, String> {
     let mut latest_non_empty = String::new();
 
     for _ in 0..8 {
@@ -834,7 +992,9 @@ fn capture_selected_text_after_copy() -> Result<String, String> {
     }
 
     let word_count = latest_non_empty.split_whitespace().count();
-    if latest_non_empty == before_trimmed && (latest_non_empty.chars().count() > 120 || word_count > 18) {
+    if latest_non_empty == before_trimmed
+        && (latest_non_empty.chars().count() > 120 || word_count > 18)
+    {
         return Ok(String::new());
     }
 
@@ -842,12 +1002,22 @@ fn capture_selected_text_after_copy() -> Result<String, String> {
 }
 
 pub fn handle_selection_hotkey_inner(app: &tauri::AppHandle) -> Result<(), String> {
+    let snapshot = read_clipboard_text()?;
+    let before_trimmed = snapshot.as_deref().unwrap_or_default().trim().to_string();
+
     trigger_copy_shortcut_once();
-    let payload = capture_selected_text_after_copy()?;
+    let payload = capture_selected_text_after_copy(before_trimmed.as_str())?;
+
+    if should_restore_clipboard_snapshot(&snapshot) {
+        if let Some(original_text) = snapshot.as_deref() {
+            let _ = write_clipboard_text(original_text);
+        }
+    }
+
     show_main_window_inner(app)?;
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "未找到主窗口".to_string())?;
+        .ok_or_else(|| "Main window not found".to_string())?;
     window
         .emit("selection_translate_triggered", payload)
         .map_err(|e| e.to_string())
@@ -959,7 +1129,7 @@ pub fn load_api_config(state: State<'_, AppState>) -> Result<ApiConfigDto, Strin
 #[tauri::command]
 pub fn save_api_config(config: ApiConfigDto, state: State<'_, AppState>) -> Result<(), String> {
     if config.base_url.trim().is_empty() || config.model.trim().is_empty() {
-        return Err("API URL 与模型名不能为空".to_string());
+        return Err("API URL and model name cannot be empty".to_string());
     }
 
     let conn = connect_db(&state.db_path)?;
@@ -975,7 +1145,7 @@ pub fn save_api_config(config: ApiConfigDto, state: State<'_, AppState>) -> Resu
 #[tauri::command]
 pub fn save_api_key(api_key: String, state: State<'_, AppState>) -> Result<(), String> {
     if api_key.trim().is_empty() {
-        return Err("API Key 不能为空".to_string());
+        return Err("API Key cannot be empty".to_string());
     }
 
     state
@@ -1012,7 +1182,7 @@ pub fn check_shortcut_conflict(
     if reserved.iter().any(|item| *item == normalized) {
         return ShortcutCheckResultDto {
             conflict: true,
-            reason: Some("快捷键与系统保留键冲突".to_string()),
+            reason: Some("Shortcut conflicts with a reserved system hotkey".to_string()),
         };
     }
 
@@ -1020,7 +1190,7 @@ pub fn check_shortcut_conflict(
     let Ok(parsed_shortcut) = parsed else {
         return ShortcutCheckResultDto {
             conflict: true,
-            reason: Some("快捷键格式无效".to_string()),
+            reason: Some("Shortcut format is invalid".to_string()),
         };
     };
 
@@ -1069,7 +1239,7 @@ pub fn check_shortcut_conflict(
         }
         Err(err) => ShortcutCheckResultDto {
             conflict: true,
-            reason: Some(format!("系统级冲突：{err}")),
+            reason: Some(format!("System-level conflict: {err}")),
         },
     }
 }
@@ -1089,7 +1259,7 @@ pub async fn translate_text(
         .unwrap_or(settings.translation_provider.clone());
     let normalized_text = normalize_translation_input(&request.text);
     if normalized_text.is_empty() {
-        return Err("请输入要翻译的内容".to_string());
+        return Err("Please enter text to translate".to_string());
     }
     let normalized_context = request.context.as_deref().map(normalize_translation_input);
     let direction = detect_direction(&normalized_text).to_string();
@@ -1413,6 +1583,37 @@ pub fn read_clipboard_text() -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use crate::models::{CollectionMode, SettingsDto};
+    use crate::security::credential_store::InMemoryStore;
+    use crate::state::AppState;
+
+    fn test_db_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("aerotrans-{name}-{nanos}.db"))
+    }
+
+    fn test_app_state(name: &str) -> (AppState, PathBuf) {
+        let db_path = test_db_path(name);
+        (
+            AppState {
+                db_path: db_path.to_string_lossy().into_owned(),
+                secrets: Arc::new(InMemoryStore::default()),
+                http_client: reqwest::Client::new(),
+                spotlight_hotkey_id: Mutex::new(None),
+                selection_hotkey_id: Mutex::new(None),
+                spotlight_hotkey_str: Mutex::new(None),
+                selection_hotkey_str: Mutex::new(None),
+            },
+            db_path,
+        )
+    }
 
     #[test]
     fn normalize_translation_input_merges_wrapped_lines() {
@@ -1454,16 +1655,172 @@ mod tests {
 
     #[test]
     fn local_api_base_url_detects_local_hosts_and_ollama() {
-        assert!(is_local_api_base_url("http://127.0.0.1:11434/v1/chat/completions"));
-        assert!(is_local_api_base_url("http://localhost:11434/v1/chat/completions"));
+        assert!(is_local_api_base_url(
+            "http://127.0.0.1:11434/v1/chat/completions"
+        ));
+        assert!(is_local_api_base_url(
+            "http://localhost:11434/v1/chat/completions"
+        ));
         assert!(is_local_api_base_url("http://0.0.0.0:8080/v1"));
         assert!(is_local_api_base_url("http://[::1]:11434/v1"));
-        assert!(is_local_api_base_url("https://ollama.local/v1/chat/completions"));
+        assert!(is_local_api_base_url(
+            "https://ollama.local/v1/chat/completions"
+        ));
     }
 
     #[test]
     fn local_api_base_url_keeps_cloud_endpoints_available() {
-        assert!(!is_local_api_base_url("https://openrouter.ai/api/v1/chat/completions"));
-        assert!(!is_local_api_base_url("https://open.bigmodel.cn/api/paas/v4/"));
+        assert!(!is_local_api_base_url(
+            "https://openrouter.ai/api/v1/chat/completions"
+        ));
+        assert!(!is_local_api_base_url(
+            "https://open.bigmodel.cn/api/paas/v4/"
+        ));
+    }
+
+    #[test]
+    fn default_memory_prompt_is_human_readable() {
+        let prompt = default_memory_prompt();
+        assert!(!prompt.contains("浣犳"));
+        assert!(prompt.contains("memory coach"));
+        assert!(prompt.contains("Vary the structure naturally"));
+    }
+
+    #[test]
+    fn sanitize_translation_hint_handles_cn_punctuation() {
+        let hint =
+            sanitize_translation_hint("robust\u{FF1B}stable\u{FF0C}reliable\u{3002}production");
+        assert_eq!(hint, "robust");
+    }
+
+    #[test]
+    fn normalize_memory_output_v2_preserves_natural_multiline_content() {
+        let raw = "robust = 稳健、扛压。\n想成系统在压力下也不乱，所以一看到 robust 就想到“稳”。\n写方案时看到这个词，脑中先跳出可靠和结实。";
+        let normalized = normalize_memory_output_v2(raw, "robust", "robust and reliable", 1);
+        assert_eq!(normalized, raw);
+    }
+
+    #[test]
+    fn anonymous_access_is_allowed_for_pollinations() {
+        assert!(allows_anonymous_access(
+            "https://text.pollinations.ai/openai"
+        ));
+        assert!(!allows_anonymous_access(
+            "https://openrouter.ai/api/v1/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn resolve_chat_url_keeps_pollinations_openai_endpoint() {
+        let url = resolve_chat_completions_url("https://text.pollinations.ai/openai");
+        assert_eq!(url, "https://text.pollinations.ai/openai");
+    }
+
+    #[test]
+    fn normalize_memory_output_v2_rejects_url_only_content() {
+        let raw = "robust\nhttps://example.com/robust\nclick here";
+        let normalized = normalize_memory_output_v2(raw, "robust", "robust and reliable", 3);
+        assert!(!normalized.contains("https://"));
+        assert!(normalized.contains("robust"));
+        assert_ne!(normalized, raw);
+        assert!(normalized.lines().count() >= 2);
+    }
+
+    #[test]
+    fn normalize_memory_output_v2_strips_pollinations_ad_tail() {
+        let raw = "robust: rob + bust\n想象一个很硬的人一拳把门 bust 开。\n强壮、稳健就是 robust。\n---\nSupport Pollinations.AI\nPowered by Pollinations.AI free text APIs.";
+        let normalized = normalize_memory_output_v2(raw, "robust", "稳健的", 5);
+        assert!(normalized.contains("robust"));
+        assert!(!normalized.to_ascii_lowercase().contains("pollinations.ai"));
+        assert_eq!(normalized.lines().count(), 3);
+    }
+
+    #[test]
+    fn finalize_memory_content_falls_back_when_ai_response_is_missing() {
+        let fallback = finalize_memory_content(None, "latent", "潜在的", 7);
+        assert_eq!(fallback, build_local_memory_tip_v2("latent", "潜在的", 7));
+    }
+
+    #[test]
+    fn build_local_memory_tip_v2_varies_across_seeds() {
+        let first = build_local_memory_tip_v2("latent", "潜在的", 0);
+        let second = build_local_memory_tip_v2("latent", "潜在的", 1);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn restores_clipboard_when_snapshot_exists() {
+        assert!(should_restore_clipboard_snapshot(&Some(
+            "before".to_string()
+        )));
+    }
+
+    #[test]
+    fn skips_clipboard_restore_when_snapshot_missing() {
+        assert!(!should_restore_clipboard_snapshot(&None));
+    }
+
+    #[test]
+    fn silent_collect_adds_starred_vocabulary_item() {
+        let (state, db_path) = test_app_state("silent-collect-starred");
+        let settings = SettingsDto {
+            collection_mode: CollectionMode::SilentAll,
+            ..SettingsDto::default()
+        };
+        let result = TranslationResultDto {
+            detected_direction: "en_to_zh".to_string(),
+            translation: "稳健的".to_string(),
+            glossary: vec![],
+            phonetics: vec![],
+            source: "google".to_string(),
+        };
+
+        maybe_silent_collect(&state, &settings, "robust", None, &result)
+            .expect("silent collect should succeed");
+
+        let conn = connect_db(&state.db_path).expect("db should be readable");
+        let saved: (String, String, i64) = conn
+            .query_row(
+                "SELECT term, translation, starred FROM vocabulary LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("saved vocabulary row should exist");
+
+        assert_eq!(saved.0, "robust");
+        assert_eq!(saved.1, "稳健的");
+        assert_eq!(saved.2, 1);
+
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn silent_collect_skips_duplicate_term_and_translation() {
+        let (state, db_path) = test_app_state("silent-collect-dedupe");
+        let settings = SettingsDto {
+            collection_mode: CollectionMode::SilentAll,
+            ..SettingsDto::default()
+        };
+        let result = TranslationResultDto {
+            detected_direction: "en_to_zh".to_string(),
+            translation: "稳健的".to_string(),
+            glossary: vec![],
+            phonetics: vec![],
+            source: "google".to_string(),
+        };
+
+        maybe_silent_collect(&state, &settings, " robust ", None, &result)
+            .expect("first collect should succeed");
+        maybe_silent_collect(&state, &settings, "ROBUST", Some("context"), &result)
+            .expect("duplicate collect should succeed without reinserting");
+
+        let conn = connect_db(&state.db_path).expect("db should be readable");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vocabulary", [], |row| row.get(0))
+            .expect("count query should succeed");
+
+        assert_eq!(count, 1);
+
+        let _ = fs::remove_file(db_path);
     }
 }
