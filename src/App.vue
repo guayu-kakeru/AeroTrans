@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   defaultApiConfig,
   defaultSettings,
@@ -12,6 +12,10 @@ import {
   shouldTranslateClipboardText,
 } from "./lib/clipboardPolicy";
 import { canCompanionPoll, companionToggleLabel } from "./lib/companionControl";
+import {
+  INTERACTIVE_BOOTSTRAP_STATUS,
+  resolveHydratedValue,
+} from "./lib/startupHydration";
 import {
   createReviewQueue,
   nextIndex,
@@ -57,7 +61,7 @@ const sourceLabels: Record<TranslationResult["source"], string> = {
 };
 
 const activeTab = ref<TabName>("spotlight");
-const status = ref("初始化中...");
+const status = ref(INTERACTIVE_BOOTSTRAP_STATUS);
 const runningInBrowser = ref(false);
 const windowLabel = ref("browser");
 const windowMaximized = ref(false);
@@ -121,6 +125,9 @@ const hasApiKey = ref(false);
 const settingsMessage = ref("");
 const shortcutStatusMessage = ref("");
 const speaking = ref(false);
+const bootstrapPending = ref(true);
+const settingsEditedDuringBootstrap = ref(false);
+const apiConfigEditedDuringBootstrap = ref(false);
 
 const vocabulary = ref<VocabularyItem[]>([]);
 const queueState = ref<ReviewQueueState<VocabularyItem>>(createReviewQueue([]));
@@ -138,6 +145,8 @@ let keydownHandler: ((event: KeyboardEvent) => void) | undefined;
 let selectionHotkeyUnlisten: (() => void) | undefined;
 let spotlightShownUnlisten: (() => void) | undefined;
 let windowFocusHandler: (() => void) | undefined;
+let applyingLoadedSettings = false;
+let applyingLoadedApiConfig = false;
 
 const isSpotlightWindow = computed(() => windowLabel.value === "spotlight");
 
@@ -163,6 +172,26 @@ const appShellStyle = computed(() => ({
     Math.max(0.2, Math.min(1, settings.value.companionOpacity / 100)),
   ),
 }));
+
+watch(
+  settings,
+  () => {
+    if (bootstrapPending.value && !applyingLoadedSettings) {
+      settingsEditedDuringBootstrap.value = true;
+    }
+  },
+  { deep: true },
+);
+
+watch(
+  apiConfig,
+  () => {
+    if (bootstrapPending.value && !applyingLoadedApiConfig) {
+      apiConfigEditedDuringBootstrap.value = true;
+    }
+  },
+  { deep: true },
+);
 
 function isLocalAiConfig(): boolean {
   const baseUrl = apiConfig.value.baseUrl.trim().toLowerCase();
@@ -414,64 +443,138 @@ async function detectWindowLabel() {
   windowLabel.value = getCurrentWindow().label;
 }
 
-async function bootstrap() {
-  await detectWindowLabel();
-
-  try {
-    const health = await tauriService.healthCheck();
-    status.value = health;
-  } catch (err) {
-    runningInBrowser.value = true;
-    status.value = "浏览器演示模式（未连接 Tauri）";
-    console.warn(err);
+async function bootstrapBrowserState() {
+  const local = localStorage.getItem("aerotrans_settings");
+  if (local) {
+    const parsed = { ...defaultSettings(), ...JSON.parse(local) };
+    parsed.translationProvider = normalizeProvider(parsed.translationProvider);
+    applyingLoadedSettings = true;
+    settings.value = resolveHydratedValue(
+      settings.value,
+      parsed,
+      settingsEditedDuringBootstrap.value,
+    );
+    applyingLoadedSettings = false;
   }
 
-  if (runningInBrowser.value) {
-    const local = localStorage.getItem("aerotrans_settings");
-    if (local) {
-      const parsed = { ...defaultSettings(), ...JSON.parse(local) };
-      parsed.translationProvider = normalizeProvider(
-        parsed.translationProvider,
+  const localApi = localStorage.getItem("aerotrans_api_config");
+  if (localApi) {
+    applyingLoadedApiConfig = true;
+    apiConfig.value = resolveHydratedValue(
+      apiConfig.value,
+      JSON.parse(localApi),
+      apiConfigEditedDuringBootstrap.value,
+    );
+    applyingLoadedApiConfig = false;
+  }
+
+  const localVocab = localStorage.getItem("aerotrans_vocabulary");
+  if (localVocab) {
+    vocabulary.value = JSON.parse(localVocab);
+    queueState.value = createReviewQueue(vocabulary.value);
+  }
+
+  hasApiKey.value = Boolean(localStorage.getItem("aerotrans_api_key"));
+  status.value = "浏览器演示模式（未连接 Tauri）";
+}
+
+async function bootstrapDesktopState() {
+  status.value = INTERACTIVE_BOOTSTRAP_STATUS;
+
+  const healthTask = tauriService
+    .healthCheck()
+    .then((health) => {
+      status.value = health;
+    })
+    .catch((err) => {
+      status.value = "桌面后端连接失败";
+      settingsMessage.value = `启动健康检查失败：${String(err)}`;
+    });
+
+  const settingsTask = tauriService
+    .loadSettings()
+    .then(async (loadedSettings) => {
+      const normalized = {
+        ...loadedSettings,
+        translationProvider: normalizeProvider(loadedSettings.translationProvider),
+      };
+      const recommendedPrompt = defaultSettings().memoryPrompt;
+      const upgraded = shouldUpgradeMemoryPrompt(normalized.memoryPrompt)
+        ? { ...normalized, memoryPrompt: recommendedPrompt }
+        : normalized;
+
+      if (upgraded !== normalized) {
+        try {
+          await tauriService.saveSettings(upgraded);
+        } catch (err) {
+          console.warn("memory prompt auto-upgrade failed", err);
+        }
+      }
+
+      applyingLoadedSettings = true;
+      settings.value = resolveHydratedValue(
+        settings.value,
+        upgraded,
+        settingsEditedDuringBootstrap.value,
       );
-      settings.value = parsed;
-    }
+      applyingLoadedSettings = false;
+    })
+    .catch((err) => {
+      settingsMessage.value = `设置加载失败：${String(err)}`;
+    });
 
-    const localApi = localStorage.getItem("aerotrans_api_config");
-    if (localApi) apiConfig.value = JSON.parse(localApi);
+  const apiConfigTask = tauriService
+    .loadApiConfig()
+    .then((loadedApiConfig) => {
+      applyingLoadedApiConfig = true;
+      apiConfig.value = resolveHydratedValue(
+        apiConfig.value,
+        loadedApiConfig,
+        apiConfigEditedDuringBootstrap.value,
+      );
+      applyingLoadedApiConfig = false;
+    })
+    .catch((err) => {
+      settingsMessage.value = `API 配置加载失败：${String(err)}`;
+    });
 
-    const localVocab = localStorage.getItem("aerotrans_vocabulary");
-    if (localVocab) {
-      vocabulary.value = JSON.parse(localVocab);
-      queueState.value = createReviewQueue(vocabulary.value);
-    }
+  const apiKeyTask = tauriService
+    .hasApiKey()
+    .then((value) => {
+      hasApiKey.value = value;
+    })
+    .catch((err) => {
+      settingsMessage.value = `API Key 状态加载失败：${String(err)}`;
+    });
 
-    hasApiKey.value = Boolean(localStorage.getItem("aerotrans_api_key"));
+  const vocabularyTask = refreshVocabulary().catch((err) => {
+    settingsMessage.value = `单词本加载失败：${String(err)}`;
+  });
+
+  const windowStateTask = Promise.allSettled([
+    refreshMaximizedState(),
+    refreshAlwaysOnTopState(),
+  ]);
+
+  await Promise.allSettled([
+    healthTask,
+    settingsTask,
+    apiConfigTask,
+    apiKeyTask,
+    vocabularyTask,
+    windowStateTask,
+  ]);
+}
+
+async function bootstrap() {
+  if (runningInBrowser.value) {
+    await bootstrapBrowserState();
+    bootstrapPending.value = false;
     return;
   }
 
-  settings.value = await tauriService.loadSettings();
-  settings.value.translationProvider = normalizeProvider(
-    settings.value.translationProvider,
-  );
-  const recommendedPrompt = defaultSettings().memoryPrompt;
-  if (shouldUpgradeMemoryPrompt(settings.value.memoryPrompt)) {
-    settings.value.memoryPrompt = recommendedPrompt;
-    try {
-      await tauriService.saveSettings(settings.value);
-    } catch (err) {
-      console.warn("memory prompt auto-upgrade failed", err);
-    }
-  }
-  apiConfig.value = await tauriService.loadApiConfig();
-  hasApiKey.value = await tauriService.hasApiKey();
-  try {
-    await tauriService.syncSpotlightShortcut(settings.value.spotlightShortcut);
-    await tauriService.syncSelectionShortcut(settings.value.selectionShortcut);
-  } catch (err) {
-    settingsMessage.value = `全局快捷键注册失败：${String(err)}`;
-  }
-  await refreshVocabulary();
-  await refreshMaximizedState();
+  await bootstrapDesktopState();
+  bootstrapPending.value = false;
 }
 
 async function refreshVocabulary() {
@@ -976,15 +1079,13 @@ function mountSpotlightKeybind() {
 }
 
 onMounted(async () => {
-  await bootstrap();
+  await detectWindowLabel();
   mountSpotlightKeybind();
 
   if (!isSpotlightWindow.value) {
     companionTimer = window.setInterval(updateCompanion, 420);
     await applyReadingCompactMode(readingCompactMode.value);
   }
-
-  await refreshAlwaysOnTopState();
 
   if (!runningInBrowser.value && windowLabel.value === "main") {
     const { listen } = await import("@tauri-apps/api/event");
@@ -1008,6 +1109,8 @@ onMounted(async () => {
     window.addEventListener("focus", windowFocusHandler);
     await focusPrimaryInput(true);
   }
+
+  void bootstrap();
 });
 
 onUnmounted(() => {
